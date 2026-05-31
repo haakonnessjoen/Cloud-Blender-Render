@@ -60,43 +60,19 @@ pub async fn get_db() -> impl IntoResponse {
 }
 
 fn check_blend_file() -> Option<impl IntoResponse> {
-    // Checking Blend file is foremost primary aim
-    let path = Path::new("./blend-folder");
+    let base_path = Path::new("./blend-folder");
     let mut blend_file_exist: bool = false;
 
-    // Read and collect only .blend file names as Strings
-    let mut blend_files: Vec<String> = match fs::read_dir(path) {
-        Ok(entries) => entries
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let file_name = entry.file_name().into_string().ok()?;
+    // Recursively find .blend files under blend-folder (supports zip-extracted subdirectories)
+    let mut blend_files: Vec<String> = Vec::new();
+    collect_blend_files_recursive(base_path, base_path, &mut blend_files);
 
-                // Skip directories
-                if entry.file_type().ok()?.is_dir() {
-                    return None;
-                }
-                if file_name.to_lowercase().ends_with(".blend") {
-                    return Some(file_name);
-                }
-
-                None
-            })
-            .collect(),
-        Err(_) => {
-            return Some((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to read ./blend-folder directory" })),
-            ));
-        }
-    };
-
-    // Sort alphabetically
+    // Sort alphabetically for deterministic selection
     blend_files.sort();
 
     // Get first blend file name (if any)
-    let first_blend_file = blend_files.get(0).cloned(); // Option<String>
+    let first_blend_file = blend_files.get(0).cloned();
 
-    // Update the bool if a valid first blend file exists
     if let Some(ref name) = first_blend_file {
         if !name.is_empty() {
             blend_file_exist = true;
@@ -119,6 +95,41 @@ fn check_blend_file() -> Option<impl IntoResponse> {
     }
 
     None
+}
+
+/// Recursively collect .blend file paths relative to base_dir.
+fn collect_blend_files_recursive(base_dir: &Path, current_dir: &Path, results: &mut Vec<String>) {
+    let entries = match fs::read_dir(current_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            // Skip temp_chunks directory
+            if path.file_name().and_then(|n| n.to_str()) == Some("temp_chunks") {
+                continue;
+            }
+            collect_blend_files_recursive(base_dir, &path, results);
+        } else if file_type.is_file() {
+            if path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|e| e.eq_ignore_ascii_case("blend"))
+                == Some(true)
+            {
+                if let Ok(relative) = path.strip_prefix(base_dir) {
+                    let relative_str = relative.to_string_lossy().replace("\\", "/");
+                    results.push(relative_str);
+                }
+            }
+        }
+    }
 }
 
 fn blender_version() {

@@ -1,3 +1,44 @@
+# ==============================================================================
+# Stage 1: Build Cloud-Blender-Render from source
+# ==============================================================================
+FROM ubuntu:22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential pkg-config libssl-dev libclang-dev \
+      curl ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install Node.js directly (no nvm - simpler for Docker)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs
+
+# Build frontend (copy package files first for layer caching)
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && npm install
+
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
+
+# Build Rust backend (copy manifests first for dependency caching)
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release 2>/dev/null || true && \
+    rm -rf src
+
+COPY src/ ./src/
+RUN touch src/main.rs && cargo build --release
+
+# ==============================================================================
+# Stage 2: Runtime image
+# ==============================================================================
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
@@ -61,10 +102,9 @@ RUN wget https://download.blender.org/release/Blender5.1/blender-5.1.0-linux-x64
     tar xf blender-5.1.0-linux-x64.tar.xz -C /app/blender --strip-components 1 && \
     rm blender-5.1.0-linux-x64.tar.xz
 
-# Cloud-Blender-Render binary
-RUN wget https://github.com/MeRahulAhire/Cloud-Blender-Render/releases/download/1.6.8/Cloud-Blender-Render && \
-    chmod u+x Cloud-Blender-Render && \
-    mv Cloud-Blender-Render /app/
+# Cloud-Blender-Render binary (compiled from source in builder stage)
+COPY --from=builder /build/target/release/Cloud-Blender-Render /app/Cloud-Blender-Render
+RUN chmod u+x /app/Cloud-Blender-Render
 
 # Copy Python script for Cycles OptiX denoise logic
 COPY cycles_optix_denoise_logic.py /app/

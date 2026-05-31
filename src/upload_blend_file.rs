@@ -74,19 +74,8 @@ pub async fn upload_handler(
         // First, cleanup any existing chunks for this file_id (handles page reload/restart)
         cleanup_chunks(&chunks_dir, &file_id);
         
-        // Then check if a completed blend file already exists in blend-folder
-        if fs::read_dir(&upload_dir)
-            .ok()
-            .and_then(|entries| {
-                entries
-                    .filter_map(|entry| entry.ok())
-                    .find(|entry| {
-                        entry.path() != chunks_dir && 
-                        entry.file_type().ok().map_or(false, |ft| ft.is_file()) &&
-                        entry.path().extension().and_then(|ext| ext.to_str()) == Some("blend")
-                    })
-            })
-            .is_some()
+        // Then check if a completed blend file already exists in blend-folder (including subdirectories)
+        if !find_blend_files(&upload_dir).is_empty()
         {
             return (
                 StatusCode::BAD_REQUEST,
@@ -199,10 +188,42 @@ pub async fn upload_handler(
                                     format!("Failed to delete zip file after extraction: {}", e),
                                 );
                             }
-                            
+
+                            // Scan for .blend files in the extracted contents
+                            let blend_files = find_blend_files(&upload_dir);
+
+                            if blend_files.is_empty() {
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    "No .blend file found in the uploaded zip archive. Please include a .blend file.".to_string(),
+                                );
+                            }
+
+                            // Use the first .blend file found
+                            let blend_file_relative = blend_files[0].to_string_lossy().replace("\\", "/");
+
+                            if blend_files.len() > 1 {
+                                println!("WARNING: Multiple .blend files found in zip. Using: {}", blend_file_relative);
+                            }
+
+                            // Update Redis with the discovered .blend file
+                            let data = json!({
+                                "blend_file": {
+                                    "is_present": true,
+                                    "file_name": &blend_file_relative,
+                                },
+                            });
+
+                            if let Err(e) = update(data) {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Failed to update Redis: {}", e),
+                                );
+                            }
+
                             return (
                                 StatusCode::OK,
-                                "Zip file uploaded and extracted successfully".to_string(),
+                                format!("Zip file uploaded and extracted successfully. Blend file: {}", blend_file_relative),
                             );
                         }
                         Err(e) => {
@@ -413,4 +434,35 @@ fn unzip_file(
 fn is_blend_or_zip_file(file_name: &str) -> bool {
     let re = Regex::new(r"(?i)\.(?:blend|zip)$").unwrap();
     re.is_match(file_name)
+}
+
+/// Recursively search a directory for .blend files.
+/// Returns paths relative to `base_dir`.
+fn find_blend_files(base_dir: &PathBuf) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    find_blend_files_recursive(base_dir, base_dir, &mut results);
+    results
+}
+
+fn find_blend_files_recursive(base_dir: &PathBuf, current_dir: &PathBuf, results: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(current_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip the temp_chunks directory
+                if path.file_name().and_then(|n| n.to_str()) == Some("temp_chunks") {
+                    continue;
+                }
+                find_blend_files_recursive(base_dir, &path, results);
+            } else if path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|e| e.eq_ignore_ascii_case("blend"))
+                == Some(true)
+            {
+                if let Ok(relative) = path.strip_prefix(base_dir) {
+                    results.push(relative.to_path_buf());
+                }
+            }
+        }
+    }
 }
