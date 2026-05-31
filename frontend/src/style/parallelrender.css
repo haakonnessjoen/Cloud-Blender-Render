@@ -1,0 +1,66 @@
+.parallel-container {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #1c1c1c;
+  color: #ddd;
+  font-size: 14px;
+}
+.parallel-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.parallel-toggle {
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: #333;
+  cursor: pointer;
+  user-select: none;
+}
+.parallel-toggle-on {
+  background: #2e7d32;
+  color: #fff;
+}
+.parallel-note {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.parallel-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.parallel-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.parallel-row select {
+  background: #262626;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.parallel-dist {
+  display: flex;
+  gap: 8px;
+}
+.parallel-dist span {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #262626;
+  cursor: pointer;
+  user-select: none;
+}
+.parallel-dist span.active {
+  background: #1565c0;
+  color: #fff;
+}
+.dim-opacity {
+  opacity: 0.4;
+  pointer-events: none;
+}

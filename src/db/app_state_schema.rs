@@ -31,7 +31,12 @@ pub fn schema_handler() -> RedisResult<()> {
           }
 
         },
-        "cycle_device" : ""
+        "cycle_device" : "",
+        "parallel" : {
+          "enabled" : false,
+          "process_count" : 1,
+          "distribution" : "chunks"
+        }
       },
       "render_status" : {
         "is_rendering" : false
@@ -40,7 +45,9 @@ pub fn schema_handler() -> RedisResult<()> {
       "rendered_image_list" : [],
       "anime_query" : "",
       "engine_query" : "",
-      "render_stats" : ""
+      "render_stats" : "",
+      "gpu_count" : 0,
+      "parallel_status" : []
     });
 
     let _: () = con.json_set("items", "$", &data)?;

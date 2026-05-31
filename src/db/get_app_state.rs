@@ -1,5 +1,6 @@
 use crate::db::update;
 use axum::{Json, http::StatusCode, response::IntoResponse};
+use nvml_wrapper::Nvml;
 use redis::{Client, JsonCommands};
 use serde_json::Value;
 use serde_json::json;
@@ -11,6 +12,7 @@ use std::process::Command;
 pub async fn get_db() -> impl IntoResponse {
     check_blend_file();
     blender_version();
+    gpu_count();
 
     // Try to connect to Redis
     let client = match Client::open("redis://127.0.0.1:6379/") {
@@ -137,4 +139,13 @@ fn blender_version() {
     } else {
         panic!("Blender exited with an error");
     }
+}
+
+fn gpu_count() {
+    let count = match Nvml::init() {
+        Ok(nvml) => nvml.device_count().unwrap_or(0),
+        Err(_) => 0,
+    };
+    let data = json!({ "gpu_count": count });
+    let _ = update(data);
 }

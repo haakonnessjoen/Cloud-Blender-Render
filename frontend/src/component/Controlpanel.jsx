@@ -2,6 +2,8 @@ import "../style/controlpanel.css";
 import Fileinput from "./Fileinput";
 import Animationtype from "./Animationtype";
 import Enginetype from "./Enginetype";
+import Parallelrender from "./Parallelrender";
+import Parallelstatus from "./Parallelstatus";
 import Filebrowser from "./Filebrowser";
 import { useEffect, useState } from "react";
 import Start from "../assets/icons/start.svg";
@@ -12,12 +14,21 @@ import { initSocket } from "./Socket";
 
 export default function Controlpanel() {
   const socket = initSocket();
+  const set_parallel_status = central_store((state) => state.set_parallel_status);
+
   useEffect(() => {
     socket.on("data_sync_confirm", (res) => {
       if (res.status === true) {
         fetch_data();
       }
     });
+    socket.on("parallel_status", (arr) => {
+      if (Array.isArray(arr)) set_parallel_status(arr);
+    });
+    return () => {
+      socket.off("parallel_status");
+      socket.off("data_sync_confirm");
+    };
   }, []);
   const [cp_state, set_cp_state] = useState(true);
   const base_url = central_store((state) => state.base_url);
@@ -41,6 +52,9 @@ export default function Controlpanel() {
     // console.table({"anime-query" : anime_query, "engine_query" : engine_query})
 
     if (render_status === false && blend_file_present === true) {
+      // Clear any panels left over from a previous parallel render; a new
+      // parallel job repopulates them, a non-parallel job leaves them empty.
+      set_parallel_status([]);
       socket.emit("blend_engine", {
         data_sync: {
           blender_settings,
@@ -76,6 +90,7 @@ export default function Controlpanel() {
           >
             <img src={!!render_status ? Stop : Start} alt="" />
           </div>
+          <Parallelstatus />
           <div className="toggle-panel-box">
             <div className="toggle-switch-section">
               <div
@@ -101,6 +116,7 @@ const Control_input = () => {
       <Fileinput />
       <Animationtype />
       <Enginetype />
+      <Parallelrender />
     </>
   );
 };
