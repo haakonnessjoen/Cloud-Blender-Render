@@ -17,6 +17,8 @@ const central_store = create((set, get) => ({
   has_fetched: false, // ✅ new flag
   upload_percentage: 0,
   settings_box: false,
+  gpu_count: 0,
+  parallel_status: [],
 
   fetch_data: async () => {
     const base_url = get().base_url;
@@ -160,6 +162,34 @@ const central_store = create((set, get) => ({
     set(
       produce((state) => {
         state.settings_box = value;
+      })
+    );
+  },
+  set_parallel_enabled: (value) => {
+    set(
+      produce((state) => {
+        state.blender_settings.parallel.enabled = value;
+      })
+    );
+  },
+  set_parallel_process_count: (value) => {
+    set(
+      produce((state) => {
+        state.blender_settings.parallel.process_count = Math.max(1, Number(value) || 1);
+      })
+    );
+  },
+  set_parallel_distribution: (value) => {
+    set(
+      produce((state) => {
+        state.blender_settings.parallel.distribution = value;
+      })
+    );
+  },
+  set_parallel_status: (value) => {
+    set(
+      produce((state) => {
+        state.parallel_status = value;
       })
     );
   },
