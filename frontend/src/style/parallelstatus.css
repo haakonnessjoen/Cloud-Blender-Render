@@ -1,0 +1,36 @@
+.pstatus-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.pstatus-card {
+  padding: 10px;
+  border-radius: 8px;
+  background: #1c1c1c;
+  border-left: 4px solid #555;
+  color: #ddd;
+  font-size: 13px;
+}
+.pstatus-running { border-left-color: #1565c0; }
+.pstatus-done { border-left-color: #2e7d32; }
+.pstatus-failed { border-left-color: #c62828; }
+.pstatus-retrying { border-left-color: #f9a825; }
+.pstatus-head {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+}
+.pstatus-frames {
+  margin-top: 4px;
+  opacity: 0.8;
+}
+.pstatus-log {
+  margin-top: 4px;
+  font-family: monospace;
+  font-size: 11px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
