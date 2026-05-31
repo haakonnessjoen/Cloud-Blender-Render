@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use socketioxide::extract::{Data, SocketRef};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -19,11 +19,15 @@ lazy_static! {
     static ref CHILD_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 }
 
-fn redis_conn() -> redis::Connection {
+// Set true while a user-initiated stop is in progress, so the worker that
+// finishes last suppresses the "finished successfully" event / notification.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+fn redis_conn() -> Option<redis::Connection> {
     Client::open("redis://127.0.0.1:6379/")
-        .unwrap()
+        .ok()?
         .get_connection()
-        .unwrap()
+        .ok()
 }
 
 /// Overwrite the whole parallel_status array (used at job start).
@@ -41,22 +45,28 @@ fn init_parallel_status(partitions: &[Partition]) {
             })
         })
         .collect();
-    let mut con = redis_conn();
-    let _: () = con
-        .json_set("items", "$.parallel_status", &Value::Array(arr))
-        .unwrap();
+    if let Some(mut con) = redis_conn() {
+        let res: redis::RedisResult<()> =
+            con.json_set("items", "$.parallel_status", &Value::Array(arr));
+        let _ = res;
+    }
 }
 
 /// Set one field of one parallel_status entry.
 fn set_status_field(index: usize, field: &str, value: Value) {
-    let mut con = redis_conn();
-    let path = format!("$.parallel_status[{}].{}", index, field);
-    let _: () = con.json_set("items", &path, &value).unwrap();
+    if let Some(mut con) = redis_conn() {
+        let path = format!("$.parallel_status[{}].{}", index, field);
+        let res: redis::RedisResult<()> = con.json_set("items", &path, &value);
+        let _ = res;
+    }
 }
 
 /// Emit the current parallel_status array to the client.
 fn emit_parallel_status(sock: &SocketRef) {
-    let mut con = redis_conn();
+    let mut con = match redis_conn() {
+        Some(c) => c,
+        None => return,
+    };
     let raw: String = match con.json_get("items", "$.parallel_status") {
         Ok(r) => r,
         Err(_) => return,
@@ -247,57 +257,46 @@ pub fn render_task(
 
         CHILD_PIDS.lock().unwrap().push(child.id());
 
-        // Read Blender's stdout and emit each line
+        // Drain stderr on its own thread to avoid a pipe-buffer deadlock
+        // (the child can block writing stderr while we block reading stdout).
+        let stderr_handle = child.stderr.take().map(|err_out| {
+            thread::spawn(move || {
+                let reader = BufReader::new(err_out);
+                for line in reader.lines().flatten() {
+                    eprintln!("BLENDER ERR: {}", line);
+                    let _ = update(json!({ "render_stats": line }));
+                }
+            })
+        });
+
+        // Read Blender's stdout and record each line
         if let Some(out) = child.stdout.take() {
             let reader = BufReader::new(out);
             for line in reader.lines().flatten() {
-                // println!("{}", line);
-                let payload = json!({ "render_stats": line });
-                update(payload).unwrap();
-                // if let Err(err) = sock.emit("blend_process", &payload) {
-                //     eprintln!("Emit error: {:?}", err);
-                // }
+                let _ = update(json!({ "render_stats": line }));
             }
         }
-
-        // Optionally read stderr as well
-        if let Some(err_out) = child.stderr.take() {
-            let reader = BufReader::new(err_out);
-            for line in reader.lines().flatten() {
-                eprintln!("BLENDER ERR: {}", line);
-                // let payload = json!({ "line": line });
-                // let _ = sock.emit("blend_process", &payload);
-                let payload = json!({ "render_stats": line });
-                update(payload).unwrap();
-            }
+        if let Some(h) = stderr_handle {
+            let _ = h.join();
         }
 
-        // Wait for Blender to finish
-        let set_render_false = json!({
-            "render_status" : {
-                "is_rendering" : false
-            }
-        });
-
-        update(set_render_false).unwrap();
-
-        // Wait for Blender to finish
+        // Wait for Blender to finish, THEN flip the rendering flag.
         let exit_status = child.wait().expect("Blender process failed");
         CHILD_PIDS.lock().unwrap().clear();
-        let exit_message = json!({ "line": "Blender exited successfully", "finished" : true });
+        update(json!({ "render_status": { "is_rendering": false } })).unwrap();
 
-        update(exit_message.clone()).unwrap();
-
-        if let Err(err) = sock.emit("blend_process", &exit_message) {
-            eprintln!("Emit error: {:?}", err);
+        // Suppress the success event/notification if the user stopped the render.
+        if !STOPPING.swap(false, Ordering::SeqCst) {
+            let exit_message = json!({ "line": "Blender exited successfully", "finished" : true });
+            update(exit_message.clone()).unwrap();
+            if let Err(err) = sock.emit("blend_process", &exit_message) {
+                eprintln!("Emit error: {:?}", err);
+            }
+            rt_handle.spawn(async {
+                web_push_notification::notify_render_complete().await;
+            });
         }
         println!("Blender exited with status: {:?}", exit_status);
-
-        
-
-        rt_handle.spawn(async {
-            web_push_notification::notify_render_complete().await;
-        });
     });
 }
 
@@ -344,7 +343,7 @@ fn spawn_process_worker(
         let mut attempt = 0;
 
         loop {
-            let mut child = std::process::Command::new(&blender_bin)
+            let spawn_result = std::process::Command::new(&blender_bin)
                 .env("CUDA_VISIBLE_DEVICES", idx.to_string())
                 .arg("-b")
                 .arg(&blend_path)
@@ -356,11 +355,23 @@ fn spawn_process_worker(
                 .args(engine_query.split_whitespace())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
-                .spawn()
-                .expect("Failed to start Blender process");
+                .spawn();
+
+            // A spawn failure (e.g. bad binary path) won't fix on retry: fail fast.
+            let mut child = match spawn_result {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to start Blender[{}]: {}", idx, e);
+                    set_status_field(idx, "state", json!("failed"));
+                    emit_parallel_status(&sock);
+                    break;
+                }
+            };
 
             let pid = child.id();
-            CHILD_PIDS.lock().unwrap().push(pid);
+            if let Ok(mut pids) = CHILD_PIDS.lock() {
+                pids.push(pid);
+            }
             set_status_field(idx, "state", json!("running"));
             emit_parallel_status(&sock);
 
@@ -386,21 +397,22 @@ fn spawn_process_worker(
                 let _ = h.join();
             }
 
-            let status = child.wait().expect("Blender process failed");
+            // Treat a wait() error as a failed exit rather than panicking.
+            let exit_ok = child.wait().map(|s| s.success()).unwrap_or(false);
 
             // Remove this pid from the live list.
-            {
-                let mut pids = CHILD_PIDS.lock().unwrap();
+            if let Ok(mut pids) = CHILD_PIDS.lock() {
                 if let Some(pos) = pids.iter().position(|&p| p == pid) {
                     pids.remove(pos);
                 }
             }
 
-            if status.success() {
+            if exit_ok {
                 set_status_field(idx, "state", json!("done"));
                 emit_parallel_status(&sock);
                 break;
-            } else if attempt == 0 {
+            } else if attempt == 0 && !STOPPING.load(Ordering::SeqCst) {
+                // Don't respawn a process the user just killed.
                 attempt += 1;
                 set_status_field(idx, "retries", json!(1));
                 set_status_field(idx, "state", json!("retrying"));
@@ -415,13 +427,17 @@ fn spawn_process_worker(
 
         // Last worker to finish flips the global flag and notifies.
         if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-            update(json!({ "render_status": { "is_rendering": false } })).unwrap();
-            let exit_message = json!({ "line": "Blender exited successfully", "finished": true });
-            update(exit_message.clone()).unwrap();
-            let _ = sock.emit("blend_process", &exit_message);
-            rt_handle.spawn(async {
-                web_push_notification::notify_render_complete().await;
-            });
+            let _ = update(json!({ "render_status": { "is_rendering": false } }));
+            // Suppress the success event/notification if the user stopped the job.
+            if !STOPPING.swap(false, Ordering::SeqCst) {
+                let exit_message =
+                    json!({ "line": "Blender exited successfully", "finished": true });
+                let _ = update(exit_message.clone());
+                let _ = sock.emit("blend_process", &exit_message);
+                rt_handle.spawn(async {
+                    web_push_notification::notify_render_complete().await;
+                });
+            }
         }
     });
 }
@@ -433,6 +449,11 @@ pub async fn stop_render() -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, "No render task are active".to_string());
     }
 
+    // Mark the stop so the worker that finishes last suppresses the
+    // "finished successfully" event, and reset the rendering flag directly
+    // rather than relying on the killed workers to do it.
+    STOPPING.store(true, Ordering::SeqCst);
+
     let mut errors = Vec::new();
     for pid in &pids {
         if let Err(err) = kill(Pid::from_raw(*pid as i32), SIGTERM) {
@@ -440,6 +461,7 @@ pub async fn stop_render() -> impl IntoResponse {
         }
     }
     CHILD_PIDS.lock().unwrap().clear();
+    let _ = update(json!({ "render_status": { "is_rendering": false } }));
 
     if errors.is_empty() {
         (StatusCode::OK, "Blender exited successfully".to_string())
