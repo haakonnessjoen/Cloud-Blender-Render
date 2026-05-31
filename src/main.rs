@@ -10,6 +10,7 @@ mod upload_blend_file;
 mod upload_extension_file;
 mod web_push_notification;
 mod delete_rendered_frames;
+mod frame_partition;
 
 use axum::{
     Router,
