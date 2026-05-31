@@ -21,7 +21,12 @@ export default function Parallelrender() {
   const locked = !blend_file_present || render_status || !available;
 
   const toggle = () => {
-    if (!locked) set_parallel_enabled(!parallel.enabled);
+    if (locked) return;
+    const next = !parallel.enabled;
+    set_parallel_enabled(next);
+    // Schema seeds process_count at 1; enabling with 1 would silently fall
+    // back to single-process on the backend, so bump to the minimum (2).
+    if (next && parallel.process_count < 2) set_parallel_process_count(2);
   };
 
   const note = () => {

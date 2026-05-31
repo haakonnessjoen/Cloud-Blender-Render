@@ -27,6 +27,7 @@ export default function Controlpanel() {
     });
     return () => {
       socket.off("parallel_status");
+      socket.off("data_sync_confirm");
     };
   }, []);
   const [cp_state, set_cp_state] = useState(true);
@@ -51,6 +52,9 @@ export default function Controlpanel() {
     // console.table({"anime-query" : anime_query, "engine_query" : engine_query})
 
     if (render_status === false && blend_file_present === true) {
+      // Clear any panels left over from a previous parallel render; a new
+      // parallel job repopulates them, a non-parallel job leaves them empty.
+      set_parallel_status([]);
       socket.emit("blend_engine", {
         data_sync: {
           blender_settings,
